@@ -52,7 +52,8 @@ class AppCloneCheckerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
                 if (applicationID.isBlank() || applicationID.isEmpty()) {
                     resultMap[AppConstants.responseResultKey] = AppConstants.failureID
-                    resultMap[AppConstants.responseMessageKey] = AppConstants.failureAppIdMessage
+                    resultMap[AppConstants.responseCodeKey] = AppConstants.failureCodeAppIdMissing
+                    resultMap[AppConstants.responseMessageKey] = AppConstants.failureMessageAppIdMissing
                     result.success(resultMap.toMap())
                     return
                 }
@@ -66,40 +67,64 @@ class AppCloneCheckerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     val activeAdmins: List<ComponentName>? = devicePolicyManager.activeAdmins
                     val appPackageDotCount = applicationID.count { it == '.' }
 
+                    // Detect system managers
+                    val detectedManagers = mutableListOf<String>()
+                    activeAdmins?.forEach { admin ->
+                        detectedManagers.add(admin.packageName)
+                    }
+                    resultMap[AppConstants.responseSystemManagerKey] = detectedManagers.joinToString(", ")
+
                     if (getDotCount(path, appPackageDotCount)>appPackageDotCount) {
                         ///"Package Mismatch"
                         ///"Cloned App"
                         isValidApp = false
+                        resultMap[AppConstants.responseCodeKey] = AppConstants.failureCodePackageMismatch
+                        resultMap[AppConstants.responseMessageKey] = AppConstants.failureMessagePackageMismatch
                         Log.d("AppCloneCheckerPlugin","Package ID Mismatch")
                     } else if (path.contains(dualAppId999)) {
                         ///"Package Directory Mismatch"
                         ///"Cloned App"
                         isValidApp = false
-                        Log.d("AppCloneCheckerPlugin","Package Mismatch")
-                    } else if (!workProfileAllowedFlag && activeAdmins != null) {
-                        ///"Used through Work Profile"
-                        ///"Cloned App"
-                        val gmsPackages = activeAdmins.filter { filter -> filter.packageName == "com.google.android.gms" }
-                        val samsungDevice = activeAdmins.any { filter -> filter.packageName.contains("com.samsung") }
+                        resultMap[AppConstants.responseCodeKey] = AppConstants.failureCodeDualApp
+                        resultMap[AppConstants.responseMessageKey] = AppConstants.failureMessageDualApp
+                        Log.d("AppCloneCheckerPlugin","Dual App 999 Detected")
+                    } else if (!workProfileAllowedFlag && activeAdmins != null && activeAdmins.isNotEmpty()) {
+                        ///"Check for Work Profile or unauthorized MDM"
+
+                        // Check if device has Samsung components
+                        val samsungDevice = activeAdmins.any { admin ->
+                            admin.packageName.contains("com.samsung")
+                        }
 
                         if(samsungDevice){
+                            // Samsung-specific check using Profile Owner
                             activeAdmins.forEach { admin ->
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                                     if (devicePolicyManager.isProfileOwnerApp(admin.packageName)) {
                                         isValidApp = false
+                                        resultMap[AppConstants.responseCodeKey] = AppConstants.failureCodeWorkProfileSamsung
+                                        resultMap[AppConstants.responseMessageKey] = AppConstants.failureMessageWorkProfileSamsung
+                                        Log.d("AppCloneCheckerPlugin", "Samsung Work Profile/Secure Folder Detected: ${admin.packageName}")
                                     }
                                 }
                             }
-                        }else{
-                            if (gmsPackages.size != activeAdmins.size) {
-                                Log.d("AppCloneCheckerPlugin", "Work Mode")
-                                isValidApp = false
-                            } else {
+                        } else {
+                            // Generic check: verify all admins are legitimate system managers
+                            val hasNonLegitimateAdmin = activeAdmins.any { admin ->
+                                val isLegitimate = AppConstants.legitimateSystemManagers.any { legitimate ->
+                                    admin.packageName.startsWith(legitimate) || admin.packageName == legitimate
+                                }
+                                !isLegitimate
+                            }
 
+                            if (hasNonLegitimateAdmin) {
+                                // Found admin that is NOT in our whitelist = enterprise MDM or unauthorized work profile
+                                isValidApp = false
+                                resultMap[AppConstants.responseCodeKey] = AppConstants.failureCodeWorkProfileGeneric
+                                resultMap[AppConstants.responseMessageKey] = AppConstants.failureMessageWorkProfileGeneric
+                                Log.d("AppCloneCheckerPlugin", "Non-Legitimate Work Profile Detected")
                             }
                         }
-                    } else {
-
                     }
 
                 }
@@ -107,11 +132,24 @@ class AppCloneCheckerPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
                 if (myActivity != null && isValidApp) {
                     resultMap[AppConstants.responseResultKey] = AppConstants.successID
+                    resultMap[AppConstants.responseCodeKey] = AppConstants.successID
                     resultMap[AppConstants.responseMessageKey] = AppConstants.successMessage
+                    // systemManager already set above
+                    result.success(resultMap.toMap())
+                } else if (myActivity == null) {
+                    resultMap[AppConstants.responseResultKey] = AppConstants.failureID
+                    resultMap[AppConstants.responseCodeKey] = AppConstants.failureCodeNoActivity
+                    resultMap[AppConstants.responseMessageKey] = AppConstants.failureMessageNoActivity
+                    resultMap[AppConstants.responseSystemManagerKey] = "N/A"
                     result.success(resultMap.toMap())
                 } else {
                     resultMap[AppConstants.responseResultKey] = AppConstants.failureID
-                    resultMap[AppConstants.responseMessageKey] = AppConstants.failureMessage
+                    // code, message, and systemManager already set in specific checks above
+                    // if not set (shouldn't happen), use generic failure
+                    if (!resultMap.containsKey(AppConstants.responseCodeKey)) {
+                        resultMap[AppConstants.responseCodeKey] = AppConstants.failureID
+                        resultMap[AppConstants.responseMessageKey] = AppConstants.failureMessage
+                    }
                     result.success(resultMap.toMap())
                 }
 
